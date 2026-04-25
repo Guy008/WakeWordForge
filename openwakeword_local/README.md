@@ -252,19 +252,29 @@ python3 run.py --model my_word --en "..." --arch micro
 ```bash
 # Files are also copied automatically:
 ls workspace/ha_deploy/MODEL_NAME/
-# MODEL_NAME.onnx
-# MODEL_NAME.tflite
-# DEPLOY.txt        ← deployment instructions
+# MODEL_NAME.onnx       ← wyoming-openwakeword (HA server)
+# MODEL_NAME.tflite     ← raw TFLite (for reference / manual use)
+# MODEL_NAME.json       ← microWakeWord manifest (ESPHome, self-contained)
+# DEPLOY.txt            ← exact deployment instructions
 ```
 
 ### microWakeWord (TFLite / ESPHome)
 
-Copy `MODEL_NAME.tflite` to your ESPHome config directory and reference it:
+ESPHome requires a **JSON manifest** file — not the `.tflite` directly.
+WakeWordForge generates it automatically. The JSON embeds the model as base64
+so you only need to copy one file.
+
+1. Copy `workspace/ha_deploy/MODEL_NAME/MODEL_NAME.json` to your ESPHome config:
+   `/config/custom_components/micro_wake_word/models/`
+2. Reference it in your device YAML:
 
 ```yaml
 micro_wake_word:
-  model: /config/custom_components/micro_wake_word/models/MODEL_NAME.tflite
+  model: /config/custom_components/micro_wake_word/models/MODEL_NAME.json
 ```
+
+> The `.tflite` file is also provided for tools that accept raw TFLite input,
+> but ESPHome needs the `.json` manifest.
 
 ---
 
@@ -421,10 +431,15 @@ python3 run.py --record --model my_word --he "..." --en "..."
 העתק את `MODEL_NAME.onnx` לתיקיית `custom_models/` של wyoming-openwakeword.
 
 ### microWakeWord (TFLite / ESPHome)
-העתק את `MODEL_NAME.tflite` וציין אותו ב-ESPHome:
+WakeWordForge מייצר קובץ **JSON manifest** שמכיל את המודל מוטמע בתוכו.
+ESPHome דורש את הקובץ הזה — לא את ה-TFLite ישירות.
+
+1. העתק את `MODEL_NAME.json` לתיקיה:
+   `/config/custom_components/micro_wake_word/models/`
+2. ציין אותו ב-ESPHome:
 ```yaml
 micro_wake_word:
-  model: /config/custom_components/micro_wake_word/models/MODEL_NAME.tflite
+  model: /config/custom_components/micro_wake_word/models/MODEL_NAME.json
 ```
 
 הקבצים נמצאים ב: `workspace/ha_deploy/MODEL_NAME/`

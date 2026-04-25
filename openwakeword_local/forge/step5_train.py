@@ -223,7 +223,7 @@ def run(model_name: str, hw,
     # TFLite is only for microWakeWord deployment (different inference pipeline).
     _write_test_script(model_name, onnx if onnx else tflite,
                        "onnx" if onnx else "tflite")
-    _create_ha_output(model_name, onnx, tflite)
+    _create_ha_output(model_name, onnx, tflite, n_steps=n_steps)
     mark_done("train", model_name)
     log_ok("Step 5 complete")
     return True
@@ -575,7 +575,54 @@ print(out_path)
     return None
 
 
-def _create_ha_output(model_name: str, onnx_path, tflite_path):
+def _create_mww_manifest(model_name: str, tflite_path: Path,
+                          deploy_dir: Path, n_steps: int) -> Path:
+    """
+    Generate the microWakeWord JSON manifest required by ESPHome.
+
+    ESPHome's micro_wake_word component will NOT load a bare .tflite file —
+    it needs a JSON manifest that contains:
+      - model metadata (wake word name, version, classes)
+      - the TFLite model embedded as a base64 string
+
+    The generated JSON can be referenced directly in ESPHome YAML:
+      micro_wake_word:
+        model: /config/custom_components/micro_wake_word/models/{model_name}.json
+    """
+    import json as _json, base64 as _b64
+
+    tflite_bytes = tflite_path.read_bytes()
+    model_b64 = _b64.b64encode(tflite_bytes).decode("ascii")
+
+    wake_word_label = model_name.replace("_", " ")
+
+    manifest = {
+        "type": "micro_wake_word",
+        "wake_word": wake_word_label,
+        "version": 1,
+        "minimum_esphome_version": "2024.2.0",
+        "micro": {
+            "model": model_b64,
+            "quantization_scheme": "s8",
+            "trained_steps": n_steps,
+            "classes": [
+                {
+                    "id": "wake_word",
+                    "label": wake_word_label,
+                }
+            ],
+            "stride_size": 1,
+        },
+    }
+
+    json_path = deploy_dir / f"{model_name}.json"
+    json_path.write_text(_json.dumps(manifest, indent=2, ensure_ascii=False),
+                         encoding="utf-8")
+    return json_path
+
+
+def _create_ha_output(model_name: str, onnx_path, tflite_path,
+                      n_steps: int = DEFAULT_N_STEPS):
     """
     Copy trained model files to workspace/ha_deploy/{model_name}/
     and write a deployment README so the user knows exactly what to do.
@@ -588,14 +635,26 @@ def _create_ha_output(model_name: str, onnx_path, tflite_path):
     if onnx_path and Path(onnx_path).exists():
         dst = deploy_dir / Path(onnx_path).name
         _sh2.copy2(str(onnx_path), str(dst))
-        files_ready.append(f"  ONNX  (openWakeWord): {dst}")
+        files_ready.append(f"  ONNX  (openWakeWord / wyoming): {dst.name}")
+
+    mww_json_path = None
     if tflite_path and Path(tflite_path).exists():
         dst = deploy_dir / Path(tflite_path).name
         _sh2.copy2(str(tflite_path), str(dst))
-        files_ready.append(f"  TFLite (microWakeWord): {dst}")
+        files_ready.append(f"  TFLite (microWakeWord):          {dst.name}")
+        # Generate the JSON manifest — ESPHome requires this alongside the TFLite
+        mww_json_path = _create_mww_manifest(model_name, dst, deploy_dir, n_steps)
+        files_ready.append(f"  JSON manifest (ESPHome):         {mww_json_path.name}")
 
     if not files_ready:
         return
+
+    mww_yaml = (
+        f"  micro_wake_word:\n"
+        f"    model: /config/custom_components/micro_wake_word/models/{model_name}.json\n"
+        if mww_json_path else
+        f"  # TFLite not available\n"
+    )
 
     readme = deploy_dir / "DEPLOY.txt"
     readme.write_text(
@@ -603,18 +662,24 @@ def _create_ha_output(model_name: str, onnx_path, tflite_path):
         f"{'=' * 50}\n\n"
         f"Files ready for Home Assistant:\n"
         + "\n".join(files_ready) + "\n\n"
-        f"-- openWakeWord (wyoming-openwakeword) --\n"
-        f"Copy {model_name}.onnx to your HA config/custom_components/openwakeword/\n"
-        f"or the wyoming-openwakeword custom_models/ directory.\n\n"
-        f"-- microWakeWord --\n"
-        f"Copy {model_name}.tflite to your HA config/custom_components/micro_wake_word/\n"
-        f"and reference it in configuration.yaml:\n"
-        f"  micro_wake_word:\n"
-        f"    models:\n"
-        f"      - model: custom/{model_name}.tflite\n",
+        f"── openWakeWord (wyoming-openwakeword / HA server) ──────\n"
+        f"1. Copy {model_name}.onnx to the wyoming-openwakeword\n"
+        f"   custom_models/ directory on your HA server.\n"
+        f"2. Restart the wyoming-openwakeword add-on.\n"
+        f"3. In HA: Settings → Voice Assistants → select wake word.\n\n"
+        f"── microWakeWord (ESP32-S3 / ESPHome) ───────────────────\n"
+        f"1. Copy {model_name}.json to your ESPHome config dir:\n"
+        f"   /config/custom_components/micro_wake_word/models/\n"
+        f"   (The JSON contains the model embedded — no separate .tflite needed)\n"
+        f"2. Reference it in your ESPHome device YAML:\n"
+        + mww_yaml +
+        f"\nNote: {model_name}.tflite is also provided for manual inspection\n"
+        f"or use with tools that accept raw TFLite files.\n",
         encoding="utf-8"
     )
 
     log_ok(f"HA deploy files ready: {deploy_dir}/")
     for f in files_ready:
         log_ok(f)
+    if mww_json_path:
+        log_ok(f"  microWakeWord manifest: {mww_json_path.name} (TFLite embedded as base64)")
