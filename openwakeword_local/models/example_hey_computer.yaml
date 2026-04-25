@@ -1,0 +1,49 @@
+# WakeWordForge — example model config
+# Copy this file to models/YOUR_MODEL_NAME.yaml and edit.
+# Then run:  python3 run.py --model YOUR_MODEL_NAME
+
+model_name: hey_computer
+
+# Target training parameters (override CLI defaults)
+samples: 100000
+steps: 100000
+penalty: 5000
+
+# Positive phrases — all these mean the same wake word.
+# Add phonetic variants to improve recognition accuracy.
+positive:
+  en:
+    - "hey computer"
+    - "hey, computer"
+    - "hey computer!"
+  he:
+    - "היי קומפיוטר"
+
+# Negative phrases — these should NOT trigger the wake word.
+# OWW will train the model to reject these.
+negative:
+  en:
+    - "hey"
+    - "computer"
+    - "okay computer"
+
+# STT quality filter (Whisper) — runs on generated TTS clips
+# Set enabled: false to skip (faster but lower quality)
+stt:
+  enabled: true
+  model: small.en
+  device: cuda
+
+# TTS sources — uncomment to enable/disable
+tts:
+  edge_tts:
+    enabled: true
+  piper_positive:
+    enabled: true
+    clips_per_text: 50
+  piper_negative:
+    enabled: true
+  google_tts:
+    enabled: true
+  wyoming:
+    enabled: false   # enable if you run a local Wyoming Piper server
