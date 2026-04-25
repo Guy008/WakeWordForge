@@ -30,7 +30,7 @@ from .common import (
 
 
 def run(model_name: str, he_text: str, en_text: str,
-        n_target: int, force=False) -> bool:
+        n_target: int, force=False, ipa_text: str = "") -> bool:
     log_section("Step 3 — Sample Generation")
 
     base = wav_base(model_name)
@@ -56,6 +56,10 @@ def run(model_name: str, he_text: str, en_text: str,
         tts_quota = max(10, n_personal // 3)
         log_info(f"TTS quota: {tts_quota} clips (ratio 3:1 vs {n_personal} personal)")
         _tts_minimal(he_text, en_text, base, tts_quota, force)
+
+    # 3b+: IPA synthesis — generates clips for phonemes English TTS cannot produce
+    if ipa_text.strip():
+        _generate_espeak_ipa(ipa_text.strip(), base, force)
 
     # 3c: STT quality filter — Whisper validates TTS clips, moves bad ones to hard negatives
     try:
@@ -149,6 +153,78 @@ def _all_variants(text: str) -> list:
 
 
 
+
+
+# ══════════════════════════════════════════════════════════
+#  IPA synthesis (espeak-ng)
+# ══════════════════════════════════════════════════════════
+def _generate_espeak_ipa(ipa_text: str, out_dir: Path, force: bool) -> int:
+    """
+    Generate TTS clips from IPA phonetic notation using espeak-ng.
+
+    espeak-ng accepts IPA via SSML <phoneme alphabet="ipa" ph="...">,
+    enabling synthesis of sounds that English orthography cannot represent —
+    e.g. Hebrew ʁ (uvular fricative), ʔ (glottal stop), ħ, χ, etc.
+
+    Produces: len(voices) × len(rates) × len(pitches) clips → wav_base/
+    Each clip is resampled to 16 kHz mono for OWW compatibility.
+    """
+    import html as _html
+    import shutil as _sh
+
+    if not _sh.which("espeak-ng"):
+        log_warn("espeak-ng not found — skipping IPA synthesis")
+        log_warn("  Install:  sudo apt install espeak-ng   (Debian/Ubuntu/WSL)")
+        log_warn("            brew install espeak-ng        (macOS)")
+        return 0
+
+    PREFIX  = "espeak_ipa"
+    voices  = ["en+m1", "en+m2", "en+m3", "en+m4", "en+m5",
+               "en+f1", "en+f2", "en+f3", "en+f4"]
+    rates   = [130, 150, 170]
+    pitches = [40, 55, 70]
+
+    existing = sum(1 for e in os.scandir(out_dir)
+                   if e.name.startswith(PREFIX) and e.name.endswith(".wav"))
+    n_expected = len(voices) * len(rates) * len(pitches)
+
+    if not force and existing >= int(n_expected * 0.8):
+        log_info(f"  espeak-ng IPA: {existing} clips (skip)")
+        return existing
+
+    log_step(f"  espeak-ng IPA [{ipa_text}]  "
+             f"{len(voices)} voices × {len(rates)} rates × {len(pitches)} pitches "
+             f"= {n_expected} clips")
+
+    ph_attr = _html.escape(ipa_text, quote=True)
+    ssml    = f'<speak><phoneme alphabet="ipa" ph="{ph_attr}">word</phoneme></speak>'
+
+    count = 0
+    for vi, voice in enumerate(voices):
+        for ri, rate in enumerate(rates):
+            for pi, pitch in enumerate(pitches):
+                out_wav = out_dir / f"{PREFIX}_v{vi}_r{ri}_p{pi}.wav"
+                if not force and out_wav.exists() and out_wav.stat().st_size > CLIP_MIN_BYTES:
+                    count += 1
+                    continue
+                tmp = out_dir / f"_ipa_tmp_{vi}_{ri}_{pi}.wav"
+                r = subprocess.run(
+                    ["espeak-ng", "--ssml",
+                     f"-v{voice}", f"-s{rate}", f"-p{pitch}",
+                     "-w", str(tmp), ssml],
+                    capture_output=True, timeout=15,
+                )
+                if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < 500:
+                    if tmp.exists():
+                        tmp.unlink()
+                    continue
+                ok = ffcmd(["-i", str(tmp), "-ar", "16000", "-ac", "1", str(out_wav)])
+                tmp.unlink()
+                if ok and out_wav.exists() and out_wav.stat().st_size > CLIP_MIN_BYTES:
+                    count += 1
+
+    log_ok(f"  espeak-ng IPA: {count} clips")
+    return count
 
 
 # ══════════════════════════════════════════════════════════

@@ -182,6 +182,7 @@ Models trained this way work but are less accurate than recording-based ones.
 | `--model NAME` | — | Model name (letters, digits, `_`) |
 | `--he TEXT` | — | Hebrew text (or phonetic text for Hebrew TTS) |
 | `--en TEXT` | — | English text. Use `\|` to separate multiple variants |
+| `--ipa TEXT` | — | IPA phonetic text — uses espeak-ng for sounds English TTS cannot produce (e.g. `maʁˈʔa`) |
 | `--target` | `both` | Output: `oww` (ONNX only), `mww` (TFLite only), `both` |
 | `--arch` | `open` | Architecture: `open` (192-unit, HA server), `micro` (64-unit, ESP32) |
 | `--samples N` | 100,000 | Augmented training samples |

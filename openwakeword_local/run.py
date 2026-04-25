@@ -132,6 +132,7 @@ def _run_steps(steps: list, cfg: dict, hw, args):
                 en_text=cfg["en_text"],
                 n_target=cfg["n_samples"],
                 force=args.force,
+                ipa_text=cfg.get("ipa_text", ""),
             )
             if not ok:
                 log_err("Step 3 failed"); sys.exit(1)
@@ -201,6 +202,7 @@ def _resolve_config(args) -> dict:
         cfg["n_samples"] = cfg["samples"]
         cfg["n_steps"]   = cfg["steps"]
         cfg["penalty"]   = getattr(args, "penalty", cfg.get("penalty", 5000))
+        cfg["ipa_text"]  = getattr(args, "ipa", "") or ""
         return cfg
 
     # Try to load from state (resume scenario)
@@ -366,6 +368,7 @@ def _parse_args():
     p.add_argument("--model",   help="Model name (letters/digits/_)")
     p.add_argument("--he",      help="Hebrew text for TTS. Use | to separate multiple phrases: 'phrase one|phrase two'")
     p.add_argument("--en",      help="English text for TTS. Use | to separate multiple phrases: 'phrase one|phrase two'")
+    p.add_argument("--ipa",     help="IPA phonetic text (e.g. \"maʁˈʔa\"). Uses espeak-ng to synthesise sounds that English TTS cannot produce.")
 
     # Training parameters
     p.add_argument("--samples",  type=int, default=DEFAULT_N_SAMPLES,
