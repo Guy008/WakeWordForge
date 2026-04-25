@@ -30,11 +30,26 @@ cd WakeWordForge
 # 2. Install (Linux / macOS)
 bash install.sh
 
-# 3. Train interactively — the wizard asks all questions
+# 3a. Web UI — easiest option (opens in browser automatically)
+python3 web_ui.py
+
+# 3b. Or train interactively in the terminal
 python3 run.py
 ```
 
-The wizard will ask:
+### Web UI
+
+```bash
+python3 web_ui.py
+# Opens http://localhost:7860
+```
+
+Fill in the form, click **Start Training**, and watch the live terminal output.
+When training finishes, download your model files directly from the browser.
+
+The Web UI auto-detects the project venv and installs Flask if needed — no manual setup required.
+
+The wizard (terminal mode) will ask:
 1. Wake word name + text
 2. Record samples now / use existing recordings / TTS-only
 3. Output target (onnx / tflite / both)
@@ -298,7 +313,8 @@ Step 5 (training) saves checkpoint NPY feature files. If interrupted:
 
 ```
 WakeWordForge/
-├── run.py                      # entry point
+├── run.py                      # entry point (TUI / CLI)
+├── web_ui.py                   # Web UI — open http://localhost:7860
 ├── install.sh                  # Linux/macOS installer
 ├── install.bat                 # Windows installer
 ├── my_recordings/              # put your WAV recordings here
@@ -383,9 +399,22 @@ cd WakeWordForge
 # 2. התקן
 bash install.sh
 
-# 3. הרץ את ה-wizard — ישאל את כל השאלות
+# 3א. ממשק ווב — הכי קל (נפתח בדפדפן אוטומטית)
+python3 web_ui.py
+
+# 3ב. או wizard בטרמינל
 python3 run.py
 ```
+
+### ממשק ווב
+
+```bash
+python3 web_ui.py
+# נפתח ב-http://localhost:7860
+```
+
+מלא את הטופס, לחץ **Start Training**, וצפה בפלט החי.
+כשהאימון מסתיים — הורד את קבצי המודל ישירות מהדפדפן.
 
 ---
 
