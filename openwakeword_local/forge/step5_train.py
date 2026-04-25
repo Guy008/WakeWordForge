@@ -223,7 +223,10 @@ def run(model_name: str, hw,
     # TFLite is only for microWakeWord deployment (different inference pipeline).
     _write_test_script(model_name, onnx if onnx else tflite,
                        "onnx" if onnx else "tflite")
-    _create_ha_output(model_name, onnx, tflite, n_steps=n_steps)
+    metrics = _evaluate_model(model_name, onnx, py, env) if (onnx and onnx.exists()) else {}
+    _create_ha_output(model_name, onnx, tflite, n_steps=n_steps,
+                      arch=arch, metrics=metrics,
+                      n_samples=n_samples, penalty=penalty)
     mark_done("train", model_name)
     log_ok("Step 5 complete")
     return True
@@ -621,8 +624,93 @@ def _create_mww_manifest(model_name: str, tflite_path: Path,
     return json_path
 
 
+def _evaluate_model(model_name: str, onnx_path: Path, py: str, env: dict) -> dict:
+    """
+    Run inference on the test-set NPY features and return evaluation metrics.
+    Executes inside the venv so onnxruntime is available.
+    Returns {} on any failure.
+    """
+    mdir     = WORKSPACE / "models" / model_name
+    pos_test = mdir / "positive_features_test.npy"
+    neg_test = mdir / "negative_features_test.npy"
+    if not pos_test.exists() or not neg_test.exists():
+        log_warn("Test NPY files not found — skipping evaluation")
+        return {}
+
+    log_step("Evaluating model on test set…")
+    script = f"""
+import sys, json, warnings
+warnings.filterwarnings("ignore")
+import numpy as np
+import onnxruntime as ort
+
+pos = np.load({repr(str(pos_test))})
+neg = np.load({repr(str(neg_test))})
+
+sess     = ort.InferenceSession({repr(str(onnx_path))}, providers=["CPUExecutionProvider"])
+inp_name = sess.get_inputs()[0].name
+
+def score_batch(data, bs=512):
+    out = []
+    for i in range(0, len(data), bs):
+        b = data[i:i+bs].astype(np.float32)
+        out.extend(sess.run(None, {{inp_name: b}})[0].flatten().tolist())
+    return out
+
+pos_scores = score_batch(pos)
+neg_scores = score_batch(neg)
+
+thr = 0.5
+tp = sum(1 for s in pos_scores if s >= thr)
+fn = len(pos_scores) - tp
+fp = sum(1 for s in neg_scores if s >= thr)
+tn = len(neg_scores) - fp
+
+recall    = tp / (tp + fn) if (tp + fn) else 0.0
+precision = tp / (tp + fp) if (tp + fp) else 0.0
+accuracy  = (tp + tn) / len(pos_scores + neg_scores)
+fpr       = fp / (fp + tn) if (fp + tn) else 0.0
+f1        = 2*precision*recall / (precision + recall) if (precision + recall) else 0.0
+
+result = dict(
+    n_pos=len(pos_scores), n_neg=len(neg_scores),
+    tp=tp, fn=fn, fp=fp, tn=tn,
+    recall=round(recall,4),
+    precision=round(precision,4),
+    accuracy=round(accuracy,4),
+    fpr=round(fpr,4),
+    f1=round(f1,4),
+    pos_mean=round(float(np.mean(pos_scores)),4),
+    pos_p10=round(float(np.percentile(pos_scores,10)),4),
+    neg_mean=round(float(np.mean(neg_scores)),4),
+    neg_p99=round(float(np.percentile(neg_scores,99)),4),
+)
+print(json.dumps(result))
+"""
+    try:
+        r = subprocess.run([py, "-c", script],
+                           capture_output=True, text=True, env=env, timeout=300)
+        import json as _json
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("{"):
+                m = _json.loads(line)
+                log_ok(f"Evaluation: recall={m['recall']:.1%}  precision={m['precision']:.1%}"
+                       f"  F1={m['f1']:.1%}  FPR={m['fpr']:.2%}")
+                return m
+        if r.stderr:
+            log_warn(f"Evaluation stderr: {r.stderr[-300:]}")
+    except Exception as e:
+        log_warn(f"Evaluation failed: {e}")
+    return {}
+
+
 def _create_ha_output(model_name: str, onnx_path, tflite_path,
-                      n_steps: int = DEFAULT_N_STEPS):
+                      n_steps: int = DEFAULT_N_STEPS,
+                      arch: str = "open",
+                      metrics: dict | None = None,
+                      n_samples: int = DEFAULT_N_SAMPLES,
+                      penalty: int = DEFAULT_PENALTY):
     """
     Copy trained model files to workspace/ha_deploy/{model_name}/
     and write a deployment README so the user knows exactly what to do.
@@ -656,18 +744,59 @@ def _create_ha_output(model_name: str, onnx_path, tflite_path,
         f"  # TFLite not available\n"
     )
 
+    from datetime import datetime as _dt
+    arch_label = f"OPEN (192-unit DNN)" if arch == "open" else f"MICRO (64-unit DNN)"
+    target_label = ("ONNX + TFLite/JSON" if (onnx_path and tflite_path)
+                    else ("ONNX only" if onnx_path else "TFLite/JSON only"))
+
+    # ── File size summary ─────────────────────────────────────────────────────
+    def _kb(p):
+        return f"{Path(p).stat().st_size // 1024:,} KB" if p and Path(p).exists() else "N/A"
+
+    files_section = "\n".join(files_ready)
+
+    # ── Evaluation section ────────────────────────────────────────────────────
+    if metrics:
+        m = metrics
+        def _pct(v): return f"{v:.1%}"
+        eval_section = (
+            f"── Evaluation results (test set, threshold = 0.5) ────────\n"
+            f"  Test samples : {m.get('n_pos',0):,} positive  |  {m.get('n_neg',0):,} negative\n\n"
+            f"  Recall       : {_pct(m.get('recall',0))}"
+            f"   ({m.get('tp',0):,} detected out of {m.get('tp',0)+m.get('fn',0):,})\n"
+            f"  Precision    : {_pct(m.get('precision',0))}"
+            f"   ({m.get('tp',0):,} true  /  {m.get('tp',0)+m.get('fp',0):,} total triggers)\n"
+            f"  F1 score     : {_pct(m.get('f1',0))}\n"
+            f"  Accuracy     : {_pct(m.get('accuracy',0))}\n"
+            f"  False pos.   : {_pct(m.get('fpr',0))}"
+            f"   ({m.get('fp',0):,} false triggers out of {m.get('fp',0)+m.get('tn',0):,})\n\n"
+            f"  Score distribution:\n"
+            f"    Positive clips : avg={m.get('pos_mean',0):.3f}   worst 10% >= {m.get('pos_p10',0):.3f}\n"
+            f"    Negative clips : avg={m.get('neg_mean',0):.3f}   worst 1%  =  {m.get('neg_p99',0):.3f}\n"
+        )
+    else:
+        eval_section = "── Evaluation results ────────────────────────────────────\n  (not available)\n"
+
     readme = deploy_dir / "DEPLOY.txt"
     readme.write_text(
-        f"Wake word model: {model_name}\n"
-        f"{'=' * 50}\n\n"
-        f"Files ready for Home Assistant:\n"
-        + "\n".join(files_ready) + "\n\n"
-        f"── openWakeWord (wyoming-openwakeword / HA server) ──────\n"
+        f"Wake word model : {model_name}\n"
+        f"Generated by    : WakeWordForge  |  {_dt.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"{'=' * 58}\n\n"
+        f"── Training parameters ───────────────────────────────────\n"
+        f"  Architecture : {arch_label}\n"
+        f"  Target       : {target_label}\n"
+        f"  Steps        : {n_steps:,}\n"
+        f"  Samples      : {n_samples:,}\n"
+        f"  Penalty      : {penalty:,}\n\n"
+        + eval_section + "\n"
+        f"── Output files ──────────────────────────────────────────\n"
+        + files_section + "\n\n"
+        f"── openWakeWord (wyoming-openwakeword / HA server) ───────\n"
         f"1. Copy {model_name}.onnx to the wyoming-openwakeword\n"
         f"   custom_models/ directory on your HA server.\n"
         f"2. Restart the wyoming-openwakeword add-on.\n"
         f"3. In HA: Settings → Voice Assistants → select wake word.\n\n"
-        f"── microWakeWord (ESP32-S3 / ESPHome) ───────────────────\n"
+        f"── microWakeWord (ESP32-S3 / ESPHome) ────────────────────\n"
         f"1. Copy {model_name}.json to your ESPHome config dir:\n"
         f"   /config/custom_components/micro_wake_word/models/\n"
         f"   (The JSON contains the model embedded — no separate .tflite needed)\n"
